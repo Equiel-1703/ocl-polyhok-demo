@@ -93,6 +93,39 @@ static ERL_NIF_TERM close_requested_nif(ErlNifEnv *env, int /* argc */, const ER
   return enif_make_atom(env, quit ? "true" : "false");
 }
 
+// This NIF updates the texture of the SDL2 window with the new pixel data provided as Nx binary.
+static ERL_NIF_TERM update_image_nif(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+  if (argc != 1)
+  {
+    std::cerr << "[ERROR] Invalid number of arguments for update_image_nif." << std::endl;
+    return enif_make_badarg(env);
+  }
+
+  // Get the pixel data as a binary
+  ErlNifBinary new_pixel_data;
+  if (!enif_inspect_binary(env, argv[0], &new_pixel_data))
+  {
+    std::cerr << "[ERROR] Failed to get pixel data binary in update_image_nif." << std::endl;
+    return enif_make_badarg(env);
+  }
+
+  // Check if the binary size matches the expected size for the window dimensions
+  if (new_pixel_data.size != sdl2->getTextureSizeBytes())
+  {
+    std::cerr << "[ERROR] Pixel data size does not match expected size in update_image_nif." << std::endl;
+    std::cerr << "Expected size: " << sdl2->getTextureSizeBytes() << " bytes" << std::endl;
+    std::cerr << "Got: " << new_pixel_data.size << " bytes" << std::endl;
+
+    return enif_make_badarg(env);
+  }
+
+  // Update the SDL2 texture with the new pixel data
+  sdl2->updateTexture((int32_t *)new_pixel_data.data);
+
+  return enif_make_int(env, 0);
+}
+
 static ERL_NIF_TERM render_window_nif(ErlNifEnv *env, int /* argc */, const ERL_NIF_TERM /* argv */[])
 {
   sdl2->render();
@@ -102,6 +135,8 @@ static ERL_NIF_TERM render_window_nif(ErlNifEnv *env, int /* argc */, const ERL_
 static ErlNifFunc nif_funcs[] = {
     {.name = "create_window_nif", .arity = 3, .fptr = create_window_nif, .flags = 0},
     {.name = "close_requested_nif", .arity = 0, .fptr = close_requested_nif, .flags = 0},
-    {.name = "render_window_nif", .arity = 0, .fptr = render_window_nif, .flags = 0}};
+    {.name = "render_window_nif", .arity = 0, .fptr = render_window_nif, .flags = 0},
+    {.name = "update_image_nif", .arity = 1, .fptr = update_image_nif, .flags = 0}
+};
 
 ERL_NIF_INIT(Elixir.SDL2, nif_funcs, &init_nifs, NULL, NULL, &unload_nifs)
