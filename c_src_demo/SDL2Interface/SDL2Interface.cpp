@@ -55,7 +55,7 @@ void SDL2Interface::createWindow(const char *title, int width, int height)
 
   texture = SDL_CreateTexture(
       renderer,
-      SDL_PIXELFORMAT_ARGB8888,    // 32-bit color (check other types if needed) 0xAARRGGBB
+      SDL_PIXELFORMAT_RGB888,      // 32-bit color ignoring alpha (I can use regular signed int)
       SDL_TEXTUREACCESS_STREAMING, // Optimized for frequent updates
       width, height);
 
@@ -64,22 +64,12 @@ void SDL2Interface::createWindow(const char *title, int width, int height)
     std::cerr << "Texture could not be created! SDL_Error: " << SDL_GetError() << std::endl;
     throw std::runtime_error("Failed to create SDL texture");
   }
-
-  pixels.resize(windowWidth * windowHeight, 0); // Initialize pixel buffer
 }
 
-void SDL2Interface::updateTexture(const std::vector<uint32_t> &newPixels)
+void SDL2Interface::updateTexture(int32_t *newPixels)
 {
-  if (newPixels.size() != pixels.size())
-  {
-    std::cerr << "Pixel data size mismatch!" << std::endl;
-    return;
-  }
-
-  pixels = newPixels;
-
-  // Update the texture with the new pixel data
-  SDL_UpdateTexture(texture, nullptr, pixels.data(), static_cast<int>(windowWidth * sizeof(uint32_t)));
+  // Update the SDL texture with the new pixel data
+  SDL_UpdateTexture(texture, nullptr, (void *)newPixels, windowWidth * sizeof(int32_t));
 }
 
 void SDL2Interface::render()
