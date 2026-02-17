@@ -4,7 +4,6 @@ defmodule JIT do
   @doc """
   Compiles a function or anonymous function into OpenCL code.
   ## Parameters
-
     - `func`: A tuple representing the function to compile. It can be either:
       - `{:anon, fname, code, type}` for anonymous functions.
       - `{name, type}` for named functions.
@@ -12,13 +11,17 @@ defmodule JIT do
     - A list containing a string with the generated OpenCL code.
   """
   def compile_function({:anon, fname, code, type}) do
-    # IO.puts "Compile function: #{fname}"
-
     delta = gen_delta_from_type(code, type)
-    # IO.inspect "Delta: #{inspect delta}"
 
-    inf_types = infer_types(code, delta)
-    # IO.inspect "inf_types: #{inspect inf_types}"
+    inf_types =
+      case infer_types(code, delta, fname) do
+        {:ok, types} ->
+          types
+
+        {:error, _types, reason} ->
+          raise "Type inference failed for anonymous function #{fname}: #{reason}"
+      end
+
     {:fn, _, [{:->, _, [para, body]}]} = code
 
     # Here I had to use the same principle as in compile_kernel to generate the parameter list
@@ -57,8 +60,6 @@ defmodule JIT do
   end
 
   def compile_function({name, type}) do
-    # IO.puts("Compile function: #{name}")
-
     nast = OCLPolyHok.load_ast(name)
 
     case nast do
@@ -67,7 +68,15 @@ defmodule JIT do
 
       {fast, fun_graph} ->
         delta = gen_delta_from_type(fast, type)
-        inf_types = infer_types(fast, delta)
+
+        inf_types =
+          case infer_types(fast, delta, name) do
+            {:ok, types} ->
+              types
+
+            {:error, _types, reason} ->
+              raise "Type inference failed for device function #{name}: #{reason}"
+          end
 
         {:defd, _iinfo, [header, [body]]} = fast
         {fname, _, para} = header
@@ -124,11 +133,7 @@ defmodule JIT do
           |> Enum.map(fn x -> {x, inf_types[x]} end)
           |> Enum.filter(fn {_, i} -> i != nil end)
 
-        # IO.inspect funs
-        # IO.inspect "inf_types: #{inspect inf_types}"
-        # IO.inspect "other funs: #{inspect other_funs}"
         comp = Enum.map(other_funs, &JIT.compile_function/1)
-        # IO.inspect "Comp: #{inspect comp} "
         comp = Enum.reduce(comp, [], fn x, y -> y ++ x end)
         comp ++ [function]
     end
@@ -174,18 +179,21 @@ defmodule JIT do
     - `delta`: A map where keys are variable names and values are their corresponding types.
 
   ## Returns
-    - A map where keys are variable names and values are their inferred types.
+    - A tuple containing:
+      - `:ok` if the type inference was successful without any type errors, or `:error` if there were type errors.
+      - A map where keys are variable names and values are their inferred types.
+      - An optional reason for the error if the inference failed.
   """
-  def infer_types({:defk, _, [_header, [body]]}, delta) do
-    OCLPolyHok.TypeInference.type_check(delta, body)
+  def infer_types({:defk, _, [_header, [body]]}, delta, kernel_name) do
+    OCLPolyHok.TypeInference.type_check(delta, body, kernel_name)
   end
 
-  def infer_types({:defd, _, [_header, [body]]}, delta) do
-    OCLPolyHok.TypeInference.type_check(delta, body)
+  def infer_types({:defd, _, [_header, [body]]}, delta, fun_name) do
+    OCLPolyHok.TypeInference.type_check(delta, body, fun_name)
   end
 
-  def infer_types({:fn, _, [{:->, _, [_para, body]}]}, delta) do
-    OCLPolyHok.TypeInference.type_check(delta, body)
+  def infer_types({:fn, _, [{:->, _, [_para, body]}]}, delta, fun_name) do
+    OCLPolyHok.TypeInference.type_check(delta, body, fun_name)
   end
 
   @doc """
@@ -267,7 +275,7 @@ defmodule JIT do
   end
 
   @doc """
-  Returns a list of tuples {name, type} of all formal parameters that are functions.
+  Returns a list of tuples {function_name, type} of all formal parameters that are functions.
 
   If the actual parameter is an anonymous function, it returns {:anon, name, code, type}.
   """
@@ -352,6 +360,125 @@ defmodule JIT do
     |> Enum.map(fn {p, _, _} -> p end)
     |> Enum.zip(inferred_types)
     |> Map.new()
+  end
+
+  @doc """
+  The gen_types_delta for device functions is just a trick =D
+  Since the function signature of a device function doesn't include any hint about its parameters types,
+  we set all of them to :none, so the TypeInference module will try to figure out the types based on the body of the
+  device function only.
+  """
+  def gen_types_delta_device({:defd, _, [header, [_body]]}) do
+    {_, _, formal_para} = header
+
+    delta =
+      formal_para
+      |> Enum.map(fn {p, _, _} -> {p, :none} end)
+      |> Map.new()
+
+    # The return type is initially set to :none (unknown)
+    Map.put(delta, :return, :none)
+  end
+
+  # Returns a list of atoms representing the names of the formal parameters of a device function.
+  defp get_parameter_names_device({:defd, _, [header, [_body]]}) do
+    {_, _, formal_para} = header
+
+    formal_para
+    |> Enum.map(fn {p, _, _} -> p end)
+  end
+
+  @doc """
+  Retrieves the AST of all non-parameter functions called within a kernel or device function.
+
+  ## Parameters
+    - `fun_graph`: A list of function names (atoms) that are called within the kernel or device function.
+
+  ## Returns
+    - A list of tuples {function_name, ast, functions_called} where:
+      - `function_name` is the name of the function.
+      - `ast` is the abstract syntax tree of the function.
+      - `functions_called` is a list of functions that are called within this function.
+  """
+  def get_non_parameters_func_asts(fun_graph) do
+    fun_graph
+    # discard special functions
+    |> Enum.filter(fn f -> not OCLPolyHok.TypeInference.is_special_function?(f) end)
+    # Load ast and filter function graph
+    |> Enum.map(fn f ->
+      # Load function ast from module server
+      {ast, funs} = OCLPolyHok.load_ast(f)
+
+      # Remove special functions from the list of functions called inside the function
+      funs =
+        Enum.filter(funs, fn fun -> not OCLPolyHok.TypeInference.is_special_function?(fun) end)
+
+      # Return function name, its ast and function graph as a tuple
+      {f, ast, funs}
+    end)
+    # Load functions called by functions in the list as well
+    |> Enum.flat_map(fn {f, ast, funs} ->
+      [{f, ast, funs} | get_non_parameters_func_asts(funs)]
+    end)
+  end
+
+  # This sorting is very simplified and may not cover all cases, but it works most of the time
+  # Need to check with Du Bois if the algorithm needs to be improved
+  def sort_functions_by_call_graph(funs_graph_asts) do
+    funs_graph_asts
+    |> Enum.sort(fn {f1, _ast1, funs1}, {f2, _ast2, funs2} ->
+      # If funs1 calls funs2, then funs1 should come after funs2 in the list (it depends on funs2)
+      if Enum.member?(funs1, f2) do
+        false
+      else
+        # If funs2 calls funs1, then funs2 should come after funs1 in the list
+        if Enum.member?(funs2, f1) do
+          true
+        else
+          # If neither calls the other, we can keep the order as is
+          true
+        end
+      end
+    end)
+  end
+
+  @doc """
+  Infers the types of the provided device functions based on their ASTs. Each inferred function is added to a delta map with its name
+  as the key and its type signature as the value and this delta is used to infer the types of the next functions in the list,
+  so the order of the functions in the list is important and is based on the call graph of the functions
+  (a function that calls another function should be after it in the list).
+
+  ## Parameters
+    - `funs_graph_asts`: A list of tuples {function_name, ast}
+  ## Returns
+    - A delta map where keys are function names and values are their type signatures in the format {return_type, [param_types]}.
+  """
+  def infer_device_functions_types(funs_graph_asts) do
+    # Remove functions that were not found (ast == nil)
+    funs_graph_asts = funs_graph_asts |> Enum.filter(fn {_f, ast} -> ast != nil end)
+
+    Enum.reduce(funs_graph_asts, Map.new(), fn {f, ast}, delta ->
+      delta_fun = gen_types_delta_device(ast)
+
+      # Add the previous inferred types of the delta map to delta_fun,
+      # so when we infer the types of the current function, it can use the types of the previous functions
+      # in the list that it calls.
+      delta_fun = Map.merge(delta_fun, delta)
+
+      case infer_types(ast, delta_fun, f) do
+        {:ok, types} ->
+          # Get the current function type signature in the format {return_type, [param_types]}
+          fun_sig =
+            {Map.get(types, :return),
+             get_parameter_names_device(ast) |> Enum.map(fn p -> Map.get(types, p) end)}
+
+          # Add it to the delta map with the function name as key
+          Map.put(delta, f, fun_sig)
+
+        {:error, _types, reason} ->
+          raise "Type inference failed for device function #{f}: #{reason}"
+      end
+    end)
   end
 
   @doc """
