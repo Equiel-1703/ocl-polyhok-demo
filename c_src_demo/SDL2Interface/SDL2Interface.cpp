@@ -2,93 +2,141 @@
 
 SDL2Interface::SDL2Interface()
 {
-  if (SDL_Init(SDL_INIT_VIDEO) < 0)
-  {
-    std::cerr << "SDL could not initialize! SDL_Error: " << SDL_GetError() << std::endl;
-    throw std::runtime_error("Failed to initialize SDL");
-  }
+  // Initialize atomic flags
+  quit = false;
+  hasNewPixels = false;
 }
 
 SDL2Interface::~SDL2Interface()
 {
-  if (texture)
-  {
-    SDL_DestroyTexture(texture);
-  }
-  if (renderer)
-  {
-    SDL_DestroyRenderer(renderer);
-  }
-  if (window)
-  {
-    SDL_DestroyWindow(window);
-  }
+  // Signal the SDL thread to quit and wait for it to finish
+  quit = true;
 
-  SDL_Quit();
+  if (sdlThread.joinable())
+  {
+    // Wait for the SDL thread to finish
+    sdlThread.join();
+  }
 }
 
 void SDL2Interface::createWindow(const char *title, int width, int height)
 {
-  std::cout << "[SDL2 Interface] Creating window with title: '" << title << "'." << std::endl;
+  this->windowTitle.assign(title);
+  this->windowWidth = width;
+  this->windowHeight = height;
 
-  windowWidth = width;
-  windowHeight = height;
+  // Allocate pixel buffer with the correct size
+  pixelBuffer.resize(windowWidth * windowHeight);
 
-  window = SDL_CreateWindow(
-      title,
-      SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+  // Start the SDL thread
+  this->sdlThread = std::thread(&SDL2Interface::sdlMainLoop, this);
+}
+
+void SDL2Interface::sdlMainLoop()
+{
+  // Initialize SDL (MUST be in the same thread that all other SDL calls)
+  if (SDL_Init(SDL_INIT_VIDEO) < 0)
+  {
+    std::cerr << "[C++ SDL2Interface] Failed to initialize SDL: " << SDL_GetError() << std::endl;
+    return;
+  }
+
+  // Create window
+  this->window = SDL_CreateWindow(
+      windowTitle.c_str(),
+      SDL_WINDOWPOS_CENTERED,
+      SDL_WINDOWPOS_CENTERED,
       windowWidth, windowHeight,
       SDL_WINDOW_SHOWN);
 
   if (!window)
   {
-    std::cerr << "Window could not be created! SDL_Error: " << SDL_GetError() << std::endl;
-    throw std::runtime_error("Failed to create SDL window");
+    std::cerr << "[C++ SDL2Interface] Failed to create window: " << SDL_GetError() << std::endl;
+    SDL_Quit();
+    return;
   }
 
-  renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+  // Create renderer
+  this->renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+
   if (!renderer)
   {
-    std::cerr << "Renderer could not be created! SDL_Error: " << SDL_GetError() << std::endl;
-    throw std::runtime_error("Failed to create SDL renderer");
+    std::cerr << "[C++ SDL2Interface] Failed to create renderer: " << SDL_GetError() << std::endl;
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return;
   }
 
-  texture = SDL_CreateTexture(
+  // Create texture -- this is what we will be updating with new pixel data
+  this->texture = SDL_CreateTexture(
       renderer,
-      SDL_PIXELFORMAT_RGB888,      // 32-bit color ignoring alpha (I can use regular signed int)
-      SDL_TEXTUREACCESS_STREAMING, // Optimized for frequent updates
-      width, height);
+      SDL_PIXELFORMAT_RGB888,      // 24 bits per pixel (8 bits for each color channel, no alpha); We can use normal int32_t for the pixel buffer since the MSB will be ignored.
+      SDL_TEXTUREACCESS_STREAMING, // We will be updating the texture frequently with new pixel data. This optimizes for that use case.
+      windowWidth, windowHeight);
 
   if (!texture)
   {
-    std::cerr << "Texture could not be created! SDL_Error: " << SDL_GetError() << std::endl;
-    throw std::runtime_error("Failed to create SDL texture");
+    std::cerr << "[C++ SDL2Interface] Failed to create texture: " << SDL_GetError() << std::endl;
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return;
   }
+
+  // Main loop
+  while (!quit.load())
+  {
+    // Handle events
+    SDL_Event e;
+    while (SDL_PollEvent(&e) != 0)
+    {
+      // Check if the user has requested to close the window (e.g., by clicking the close button)
+      if (e.type == SDL_QUIT)
+      {
+        quit = true;
+      }
+
+      // Check if ESC key is pressed. We can close the window with ESC key as well.
+      if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
+      {
+        quit = true;
+      }
+    }
+
+    // If we have new pixel data, update the texture
+    if (hasNewPixels.load())
+    {
+      // Lock the buffer mutex to safely access the pixel buffer
+      std::lock_guard<std::mutex> lock(bufferMutex);
+      SDL_UpdateTexture(texture, nullptr, pixelBuffer.data(), windowWidth * sizeof(int32_t));
+      hasNewPixels = false; // Reset the flag after updating the texture
+    }
+
+    // Render screen
+    SDL_RenderClear(renderer);                           // Clear the renderer with the current draw color (default is black)
+    SDL_RenderCopy(renderer, texture, nullptr, nullptr); // Copy the entire texture to the renderer
+    SDL_RenderPresent(renderer);                         // Update the screen with the rendered content
+
+    // Sleep for a short duration to limit the frame rate and reduce CPU usage
+    std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
+  }
+
+  std::cerr << "[C++ SDL2Interface] SDL main loop has exited and resources have been cleaned up." << std::endl;
+
+  // When we exit the main loop, clean up SDL resources
+  SDL_DestroyTexture(texture);
+  SDL_DestroyRenderer(renderer);
+  SDL_DestroyWindow(window);
+  SDL_Quit();
 }
 
+// Thread-safe method to update the texture with new pixel data from the main thread (called by NIFs)
 void SDL2Interface::updateTexture(int32_t *newPixels)
 {
-  // Update the SDL texture with the new pixel data
-  SDL_UpdateTexture(texture, nullptr, (void *)newPixels, windowWidth * sizeof(int32_t));
-}
-
-void SDL2Interface::render()
-{
-  // Clear screen
-  SDL_RenderClear(renderer);
-  // Copy texture to renderer
-  SDL_RenderCopy(renderer, texture, nullptr, nullptr);
-  // Update screen
-  SDL_RenderPresent(renderer);
-}
-
-void SDL2Interface::handleEvents(bool &quit)
-{
-  while (SDL_PollEvent(&e) != 0)
-  {
-    if (e.type == SDL_QUIT)
-      quit = true;
-    if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
-      quit = true;
-  }
+  // Lock the buffer mutex
+  std::lock_guard<std::mutex> lock(bufferMutex);
+  // Update the pixel buffer with the new pixel data
+  std::copy(newPixels, newPixels + (windowWidth * windowHeight), pixelBuffer.begin());
+  // Set the flag to indicate that we have new pixels to update the texture with
+  hasNewPixels = true;
 }

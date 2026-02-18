@@ -80,16 +80,18 @@ static ERL_NIF_TERM create_window_nif(ErlNifEnv *env, int argc, const ERL_NIF_TE
   }
 
   // Creating window
-  std::cout << "[C++ DEMO NIFS] Window name: '" << window_name << "'." << std::endl;
+  std::cout << "[C++ DEMO NIFS] Created window '" << window_name << "' with dimensions " << width << "x" << height << "." << std::endl;
+  std::cout << "[C++ DEMO NIFS] A new thread in C++ was created to run the SDL2 main loop, which will handle rendering and events for this window." << std::endl;
+
   sdl2->createWindow(window_name, width, height);
 
   return enif_make_int(env, 0);
 }
 
+// Checks if the window has been requested to close
 static ERL_NIF_TERM close_requested_nif(ErlNifEnv *env, int /* argc */, const ERL_NIF_TERM /* argv */[])
 {
-  bool quit = false;
-  sdl2->handleEvents(quit);
+  bool quit = sdl2->isCloseRequested();
   return enif_make_atom(env, quit ? "true" : "false");
 }
 
@@ -126,17 +128,9 @@ static ERL_NIF_TERM update_image_nif(ErlNifEnv *env, int argc, const ERL_NIF_TER
   return enif_make_int(env, 0);
 }
 
-static ERL_NIF_TERM render_window_nif(ErlNifEnv *env, int /* argc */, const ERL_NIF_TERM /* argv */[])
-{
-  sdl2->render();
-  return enif_make_int(env, 0);
-}
-
 static ErlNifFunc nif_funcs[] = {
     {.name = "create_window_nif", .arity = 3, .fptr = create_window_nif, .flags = 0},
     {.name = "close_requested_nif", .arity = 0, .fptr = close_requested_nif, .flags = 0},
-    {.name = "render_window_nif", .arity = 0, .fptr = render_window_nif, .flags = 0},
-    {.name = "update_image_nif", .arity = 1, .fptr = update_image_nif, .flags = 0}
-};
+    {.name = "update_image_nif", .arity = 1, .fptr = update_image_nif, .flags = 0}};
 
 ERL_NIF_INIT(Elixir.SDL2, nif_funcs, &init_nifs, NULL, NULL, &unload_nifs)
