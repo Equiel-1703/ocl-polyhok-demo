@@ -170,8 +170,6 @@ static ERL_NIF_TERM jit_compile_and_launch_nif(ErlNifEnv *env, int argc, const E
     // If this kernel is not compiled yet, we need to compile it and store it in the map for future use.
     // This way, if the same kernel is launched multiple times, we only pay the compilation cost once, and subsequent launches will be faster.
 
-    std::cout << "[C++ GPU NIF] Compiling kernel '" << kernel_name << "' for the first time..." << std::endl;
-
     // Get kernel code to compile
     ERL_NIF_TERM e_code = argv[1];
     unsigned int size_code;
@@ -193,10 +191,6 @@ static ERL_NIF_TERM jit_compile_and_launch_nif(ErlNifEnv *env, int argc, const E
     {
       return enif_raise_exception(env, enif_make_string(env, e.what(), ERL_NIF_LATIN1));
     }
-  }
-  else
-  {
-    std::cout << "[C++ GPU NIF] Kernel '" << kernel_name << "' is already compiled. Using cached version." << std::endl;
   }
 
   // Reference to our kernel object in the map
