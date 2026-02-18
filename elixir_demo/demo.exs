@@ -89,9 +89,8 @@ OCLPolyHok.defmodule RayMarching do
     s1_radius = 0.5
 
     # Sphere 1 animation: it bounces!
-    # height = 0.5
-    # s1_y = -fabs(sin(time * 5.0) * height)
-    s1_y = 0.0
+    height = 0.5
+    s1_y = -fabs(sin(time * 5.0) * height)
 
     return(sphere_sdf(p_x, p_y, p_z, s1_x, s1_y, s1_z, s1_radius))
   end
@@ -233,26 +232,28 @@ OCLPolyHok.defmodule RayMarching do
 
     {time, _} = :erlang.statistics(:wall_clock)
     time = time / 1000.0
-    # IO.inspect(time, label: "time")
 
     # Lançando o kernel de renderização na GPU
-    # OCLPolyHok.spawn(
-    #   &RayMarching.render_kernel/4,
-    #   {blocks_x, blocks_y, 1},
-    #   {threads_per_block, threads_per_block, 1},
-    #   [gpu_array, dim_x, dim_y, time]
-    # )
     OCLPolyHok.spawn(
-      &RayMarching.test_time_kernel/4,
+      &RayMarching.render_kernel/4,
       {blocks_x, blocks_y, 1},
       {threads_per_block, threads_per_block, 1},
       [gpu_array, dim_x, dim_y, time]
     )
 
+    # Timing debug kernel
+    # OCLPolyHok.spawn(
+    #   &RayMarching.test_time_kernel/4,
+    #   {blocks_x, blocks_y, 1},
+    #   {threads_per_block, threads_per_block, 1},
+    #   [gpu_array, dim_x, dim_y, time]
+    # )
+
     # Pega o resultado da renderização na GPU e envia para o processo do SDL2 para atualizar a textura
     result_ram = gpu_array |> OCLPolyHok.get_gnx()
 
-    IO.inspect(result_ram, label: "result_ram")
+    # IO.inspect(result_ram, label: "result_ram")
+
     send(sdl_pid, {:render_img, result_ram})
 
     # Recursão para continuar o loop de renderização
@@ -291,7 +292,7 @@ window_height = 500
 img_array_gpu = OCLPolyHok.new_gnx(window_width, window_height, {:s, 32})
 
 # Lançando o processo do SDL2
-SDL2.create_window_nif(~c"teste", window_width, window_height)
+SDL2.create_window_nif(~c"OCL-PolyHok - Ray Marching Demo", window_width, window_height)
 sdl_process_pid = spawn(fn -> SDL2.loop() end)
 
 # Processo principal cuida da renderização, e envia a imagem renderizada para o processo do SDL2
