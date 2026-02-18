@@ -191,6 +191,7 @@ OCLPolyHok.defmodule RayMarching do
         n_x = scene_sdf(hit_x + epsilon, hit_y, hit_z, time) - scene_sdf(hit_x - epsilon, hit_y, hit_z, time)
         n_y = scene_sdf(hit_x, hit_y + epsilon, hit_z, time) - scene_sdf(hit_x, hit_y - epsilon, hit_z, time)
         n_z = scene_sdf(hit_x, hit_y, hit_z + epsilon, time) - scene_sdf(hit_x, hit_y, hit_z - epsilon, time)
+
         # Normalize the normal
         n_len = lenght(n_x, n_y, n_z)
         n_x = n_x / n_len
@@ -292,8 +293,11 @@ window_height = 500
 img_array_gpu = OCLPolyHok.new_gnx(window_width, window_height, {:s, 32})
 
 # Lançando o processo do SDL2
-SDL2.create_window_nif(~c"OCL-PolyHok - Ray Marching Demo", window_width, window_height)
-sdl_process_pid = spawn(fn -> SDL2.loop() end)
+sdl_process_pid =
+  spawn(fn ->
+    SDL2.create_window_nif(~c"OCL-PolyHok - Ray Marching Demo", window_width, window_height)
+    SDL2.loop()
+  end)
 
 # Processo principal cuida da renderização, e envia a imagem renderizada para o processo do SDL2
 RayMarching.render(sdl_process_pid, img_array_gpu, window_width, window_height)
