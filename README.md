@@ -1,4 +1,4 @@
-# OCL-PolyHok: A Ray Marching Demonstration
+# OCL-PolyHok: Ray Marching Demonstration
 
 This repository contains a demonstration of the [OCL-PolyHok DSL](https://github.com/Equiel-1703/ocl-polyhok) used with Elixir's powerful lightweight processes and actors model. We implemented a ray marching algorithm with a main kernel and several helper device functions.
 
