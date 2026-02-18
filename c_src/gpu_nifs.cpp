@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <chrono>
+#include <unordered_map>
 
 bool debug_logs = false;
 bool fp64_supported = false;
@@ -40,6 +41,9 @@ void dev_array_destructor(ErlNifEnv * /* env */, void *res)
 }
 
 OCLInterface *open_cl = nullptr;
+
+// This map stores the compiled OpenCL kernels, with the kernel name as the key and the cl::Kernel object as the value.
+std::unordered_map<std::string, cl::Kernel> *compiled_kernels;
 
 // Global resource type for GPU arrays (cl::Buffer objects)
 ErlNifResourceType *ARRAY_TYPE;
@@ -112,6 +116,9 @@ static int load(ErlNifEnv *env, void ** /* priv_data */, ERL_NIF_TERM /* load_in
   // Initialize OpenCL interface
   init_ocl(env);
 
+  // Initialize the compiled kernels map
+  compiled_kernels = new std::unordered_map<std::string, cl::Kernel>();
+
   return 0;
 }
 
@@ -122,6 +129,12 @@ static void unload(ErlNifEnv * /* env */, void * /* priv_data */)
   {
     delete open_cl;
     open_cl = nullptr;
+  }
+
+  if (compiled_kernels != nullptr)
+  {
+    delete compiled_kernels;
+    compiled_kernels = nullptr;
   }
 
   if (debug_logs)
@@ -148,33 +161,46 @@ static ERL_NIF_TERM jit_compile_and_launch_nif(ErlNifEnv *env, int argc, const E
     return enif_make_badarg(env);
   }
 
-  char kernel_name[size_name + 1];
-  enif_get_string(env, e_name, kernel_name, size_name + 1, ERL_NIF_LATIN1);
+  std::string kernel_name(size_name + 1, '\0');
+  enif_get_string(env, e_name, kernel_name.data(), size_name + 1, ERL_NIF_LATIN1);
 
-  // Get kernel code to compile
-  ERL_NIF_TERM e_code = argv[1];
-  unsigned int size_code;
-  if (!enif_get_list_length(env, e_code, &size_code))
+  // Check if this kernel is already compiled and cached in the 'compiled_kernels' map. If so, we can skip the compilation step and directly execute it.
+  if (compiled_kernels->find(kernel_name) == compiled_kernels->end())
   {
-    return enif_make_badarg(env);
+    // If this kernel is not compiled yet, we need to compile it and store it in the map for future use.
+    // This way, if the same kernel is launched multiple times, we only pay the compilation cost once, and subsequent launches will be faster.
+
+    std::cout << "[C++ GPU NIF] Compiling kernel '" << kernel_name << "' for the first time..." << std::endl;
+
+    // Get kernel code to compile
+    ERL_NIF_TERM e_code = argv[1];
+    unsigned int size_code;
+    if (!enif_get_list_length(env, e_code, &size_code))
+    {
+      return enif_make_badarg(env);
+    }
+
+    std::string code(size_code + 1, '\0');
+    enif_get_string(env, e_code, code.data(), size_code + 1, ERL_NIF_LATIN1);
+
+    try
+    {
+      cl::Program program = open_cl->createProgram(code);
+      // Creating kernel object inside our map
+      compiled_kernels->insert({kernel_name, open_cl->createKernel(program, kernel_name.c_str())});
+    }
+    catch (const std::exception &e)
+    {
+      return enif_raise_exception(env, enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    }
+  }
+  else
+  {
+    std::cout << "[C++ GPU NIF] Kernel '" << kernel_name << "' is already compiled. Using cached version." << std::endl;
   }
 
-  char code[size_code + 1];
-  enif_get_string(env, e_code, code, size_code + 1, ERL_NIF_LATIN1);
-
-  // Creating program and kernel objects
-  cl::Program program;
-  cl::Kernel kernel;
-
-  try
-  {
-    program = open_cl->createProgram(code);
-    kernel = open_cl->createKernel(program, kernel_name);
-  }
-  catch (const std::exception &e)
-  {
-    return enif_raise_exception(env, enif_make_string(env, e.what(), ERL_NIF_LATIN1));
-  }
+  // Reference to our kernel object in the map
+  cl::Kernel &kernel = compiled_kernels->at(kernel_name);
 
   // Getting blocks and threads tuples pointers
   const ERL_NIF_TERM *tuple_blocks, *tuple_threads;
@@ -355,7 +381,7 @@ static ERL_NIF_TERM get_gpu_array_nif(ErlNifEnv *env, int /* argc */, const ERL_
   char type_name[1024];
 
   cl::Buffer *device_array = nullptr;
-  
+
   // Get the Buffer resource to copy data from
   if (!enif_get_resource(env, argv[0], ARRAY_TYPE, (void **)&device_array))
   {
