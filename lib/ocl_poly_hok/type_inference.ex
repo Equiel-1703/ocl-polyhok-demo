@@ -22,7 +22,8 @@ defmodule OCLPolyHok.TypeInference do
                        {:pow, {:float, [:float, :float]}},
                        {:trunc, {:int, [:float]}},
                        {:abs, {:int, [:int]}},
-                       {:fabs, {:float, [:float]}}
+                       {:fabs, {:float, [:float]}},
+                       {:fmod, {:float, [:float, :float]}}
                      ])
 
   def set_debug_logs(value) do
