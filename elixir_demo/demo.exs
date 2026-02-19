@@ -84,13 +84,13 @@ OCLPolyHok.defmodule RayMarching do
   # to that point
   defd scene_sdf(p_x, p_y, p_z, time) do
     # Sphere 1
-    s1_x = 0.0 * time
+    s1_x = 0.0
     s1_z = -1.0
     s1_radius = 0.5
 
     # Sphere 1 animation: it bounces!
     height = 0.5
-    s1_y = -fabs(sin(time * 5.0) * height)
+    s1_y = -fabs(sin(time * 5.0) * height) + 0.2
 
     return(sphere_sdf(p_x, p_y, p_z, s1_x, s1_y, s1_z, s1_radius))
   end
@@ -137,27 +137,31 @@ OCLPolyHok.defmodule RayMarching do
     return(-1.0)
   end
 
-  defk render_kernel(img_array, dim_x, dim_y, time) do
+  defk render_kernel(img_array, dim_x, dim_y, time, fov) do
     tid_x = get_global_id(0)
     tid_y = get_global_id(1)
 
     if tid_x < dim_x && tid_y < dim_y do
-      # Creating UV coordinates
+      # Creating UV coordinates normalized to [-1, 1]
       u = 2.0 * (1.0 * tid_x / (1.0 * dim_x)) - 1.0
       v = 2.0 * (1.0 * tid_y / (1.0 * dim_y)) - 1.0
-      # Aspect ratio correction
+      # Aspect ratio correction for x coordinate
       u = u * (1.0 * dim_x / (1.0 * dim_y))
+      # FOV correction
+      fov_correction = tan(fov / 2.0)
+      u = u * fov_correction
+      v = v * fov_correction
 
-      # Set up camera origin (location)
+      # Set up camera position (ray origin)
       cam_x = 0.0
       cam_y = 0.0
-      cam_z = 0.0
+      cam_z = 1.0
 
       # Ray direction (where the camera is looking at)
       # The camera is looking towards the negative z direction
       ray_dir_x = u - cam_x
       ray_dir_y = v - cam_y
-      ray_dir_z = -1.0 - cam_z
+      ray_dir_z = -1.0
 
       # Normalize ray direction
       ray_dir_len = lenght(ray_dir_x, ray_dir_y, ray_dir_z)
@@ -179,7 +183,7 @@ OCLPolyHok.defmodule RayMarching do
         # I'll add a simple directional light pointing to (0, 1, -1)
         light_dir_x = 0.0
         light_dir_y = 1.0
-        light_dir_z = -1.0
+        light_dir_z = -5.0
         # Normalize light direction
         light_dir_len = lenght(light_dir_x, light_dir_y, light_dir_z)
         light_dir_x = light_dir_x / light_dir_len
@@ -203,11 +207,21 @@ OCLPolyHok.defmodule RayMarching do
         # Clamp to [0, 1]
         brightness = min(max(brightness, 0.0), 1.0)
 
-        # Color phasing, get remainder of time divided by 255 to create a cycling effect
-        color = fmod(time * 100.0, 65536.0)
+        # Color phase
+        phase = fabs(sin(time * 2.0))
 
-        # Apply the brightness to a base color (I'm using blue)
-        img_array[tid_y * dim_x + tid_x] = trunc(brightness * color)
+        # Base colors
+        color_r = 100.0
+        color_g = 100.0 * phase
+        color_b = 255.0 * (1.0 - phase)
+
+        # Applying brightness to each color channel
+        final_r = trunc(brightness * color_r)
+        final_g = trunc(brightness * color_g)
+        final_b = trunc(brightness * color_b)
+
+        final_color = (final_r * 0x10000) + (final_g * 0x100) + final_b
+        img_array[tid_y * dim_x + tid_x] = final_color
       else
         # If we didn't hit anything, set the pixel to black
         img_array[tid_y * dim_x + tid_x] = 0x000000
@@ -234,12 +248,15 @@ OCLPolyHok.defmodule RayMarching do
     {time, _} = :erlang.statistics(:wall_clock)
     time = time / 1000.0
 
+    # FOV (field of view) in degrees, converted to radians
+    fov = 60.0 * (:math.pi() / 180.0)
+
     # Lançando o kernel de renderização na GPU
     OCLPolyHok.spawn(
-      &RayMarching.render_kernel/4,
+      &RayMarching.render_kernel/5,
       {blocks_x, blocks_y, 1},
       {threads_per_block, threads_per_block, 1},
-      [gpu_array, dim_x, dim_y, time]
+      [gpu_array, dim_x, dim_y, time, fov]
     )
 
     # Timing debug kernel
@@ -287,7 +304,7 @@ end
 # * outro processo (o principal) da renderização -> RayMarching
 
 window_width = 500
-window_height = 500
+window_height = 600
 
 # Array com a imagem na GPU - global
 img_array_gpu = OCLPolyHok.new_gnx(window_width, window_height, {:s, 32})
