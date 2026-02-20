@@ -79,6 +79,22 @@ OCLPolyHok.defmodule RayMarching do
     return(l - radius)
   end
 
+  # Polynomial Smooth Minimum Function
+  # Essa função é usada para combinar as SDFs de múltiplos objetos de forma suave, criando uma transição
+  # suave tipo "líquido" quando os objetos se aproximam um do outro.
+  # Recebe as distâncias d1 e d2 e um fator k que controla a suavidade da transição.
+  # Quanto maior for k, mais suave será a transição.
+  defd smooth_min(d1, d2, k) do
+    # Calcula o fator de interpolação 'h'
+    h = 0.5 + 0.5 * (d2 - d1) / k
+    # Clampa 'h' para o intervalo [0, 1]
+    h = clamp(h, 0.0, 1.0)
+
+    # Retorna a distância combinada usando interpolação polinomial
+    mix_val = h * d1 + (1.0 - h) * d2
+    return(mix_val - k * h * (1.0 - h))
+  end
+
   # 3D map of the scene, returns the distance to the closest object
   # Receives a point p (p_x, p_y, p_z) and returns the distance to the closest object in the scene
   # to that point
@@ -86,13 +102,21 @@ OCLPolyHok.defmodule RayMarching do
     # Sphere 1
     s1_x = 0.0
     s1_z = -1.0
+    s1_y = -fabs(sin(time * 5.0) * 0.5) + 0.2
     s1_radius = 0.5
 
-    # Sphere 1 animation: it bounces!
-    height = 0.5
-    s1_y = -fabs(sin(time * 5.0) * height) + 0.2
+    # Sphere 2
+    s2_x = cos(time * 3.0) * 0.5
+    s2_y = sin(time * 4.0)
+    s2_z = -1.0
+    s2_radius = 0.2
 
-    return(sphere_sdf(p_x, p_y, p_z, s1_x, s1_y, s1_z, s1_radius))
+    # Calculate the distance to each sphere using the sphere SDF
+    sphere_1_distance = sphere_sdf(p_x, p_y, p_z, s1_x, s1_y, s1_z, s1_radius)
+    sphere_2_distance = sphere_sdf(p_x, p_y, p_z, s2_x, s2_y, s2_z, s2_radius)
+
+    # Smoothly combine the distances to the two spheres using the smooth minimum function
+    return(smooth_min(sphere_1_distance, sphere_2_distance, 0.3))
   end
 
   # Ray marching function
